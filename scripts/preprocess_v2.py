@@ -1,3 +1,42 @@
+"""
+preprocess_v2.py
+
+Updated preprocessing pipeline for the NuScenes trajectory prediction project.
+
+Changes compared to preprocess_v1:
+--------------------------------------------------
+1. Unified preprocessing pipeline
+   - This script follows the shared preprocessing format used by the team,
+     ensuring all members generate identical input tensors.
+
+2. Dataset compatibility
+   - Designed for NuScenes v1.0 trainval dataset.
+   - Also compatible with v1.0-mini for local testing.
+
+3. Category filtering
+   - Static objects and animals are excluded from the dataset.
+   - Only the following categories are kept for trajectory prediction:
+        - vehicle
+        - human
+        - movable_object
+
+4. Output format
+   - Generates tensors for trajectory prediction:
+        train_x : (N, 4, 2)  -> observed trajectory (past positions)
+        train_y : (N, 12, 2) -> future trajectory (prediction target)
+
+5. Saved outputs
+   - Processed tensors are stored in the `processed/` directory.
+
+Purpose
+--------------------------------------------------
+This preprocessing pipeline ensures consistent training and evaluation
+inputs for baseline models and future deep learning models (e.g., Transformer).
+
+Author: Yongxin Guan
+Branch: yongxin-baseline
+"""
+
 from pathlib import Path
 from collections import defaultdict
 import warnings
