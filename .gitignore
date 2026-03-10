@@ -3,3 +3,15 @@ processed/
 *.pt
 __pycache__/
 .DS_Store
+
+# datasets
+data/
+processed/
+
+# python
+__pycache__/
+*.pyc
+
+# mac
+.DS_Store
+.vscode/
