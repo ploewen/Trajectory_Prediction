@@ -10,7 +10,7 @@ import json
 import numpy as np
 from tqdm import tqdm
 
-from model import TransformerTrajectoryPredictor
+from model import TransformerTrajectoryPredictor, LegacyFlattenedTransformerTrajectoryPredictor
 from dataset import load_data, create_dataloaders
 
 
@@ -30,30 +30,7 @@ def evaluate_model(checkpoint_path, device=None, batch_size=64):
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {device}")
     
-    # Load checkpoint
-    print(f"\nLoading model from: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    
-    # Reconstruct model
-    hyperparams = checkpoint.get('hyperparameters', {})
-    d_model = hyperparams.get('d_model', 64)
-    nhead = hyperparams.get('nhead', 8)
-    num_layers = hyperparams.get('num_layers', 4)
-    
-    model = TransformerTrajectoryPredictor(
-        input_dim=8,
-        output_dim=24,
-        d_model=d_model,
-        nhead=nhead,
-        num_layers=num_layers
-    )
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model = model.to(device)
-    model.eval()
-    
-    print(f"Model loaded (Epoch {checkpoint.get('epoch', 'N/A')})")
-    
-    # Load data
+    # Load data first to detect actual dimensions
     print("\nLoading data...")
     train_x, train_y, scene_ids = load_data(device=device)
     
@@ -64,6 +41,47 @@ def evaluate_model(checkpoint_path, device=None, batch_size=64):
         device=device,
         shuffle_train=False
     )
+    
+    # Load checkpoint
+    print(f"\nLoading model from: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    
+    # Reconstruct model using actual data dimensions.
+    # New checkpoints use one token per history frame.
+    # Old checkpoints used a flattened single-token variant, so we keep compatibility here.
+    hyperparams = checkpoint.get('hyperparameters', {})
+    d_model = hyperparams.get('d_model', 64)
+    nhead = hyperparams.get('nhead', 8)
+    num_layers = hyperparams.get('num_layers', 4)
+    
+    num_input_frames, num_input_features = train_x.shape[1:]
+    num_output_frames, num_output_features = train_y.shape[1:]
+
+    architecture_version = hyperparams.get('architecture_version')
+    input_embedding_weight = checkpoint['model_state_dict']['input_embedding.weight']
+    uses_legacy_flattened_model = (
+        architecture_version is None and input_embedding_weight.shape[1] == num_input_frames * num_input_features
+    )
+
+    model_cls = LegacyFlattenedTransformerTrajectoryPredictor if uses_legacy_flattened_model else TransformerTrajectoryPredictor
+
+    model = model_cls(
+        num_input_frames=num_input_frames,
+        num_output_frames=num_output_frames,
+        num_input_features=num_input_features,
+        num_output_features=num_output_features,
+        d_model=d_model,
+        nhead=nhead,
+        num_layers=num_layers
+    )
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model = model.to(device)
+    model.eval()
+    
+    print(f"Model loaded (Epoch {checkpoint.get('epoch', 'N/A')})")
+    print(f"  Architecture: {'legacy_flattened_v1' if uses_legacy_flattened_model else 'temporal_tokens_v2'}")
+    print(f"  Input: {num_input_frames} frames × {num_input_features} features")
+    print(f"  Output: {num_output_frames} frames × {num_output_features} features")
     
     # Evaluate on test set
     print("\nEvaluating on test set...")
@@ -83,8 +101,8 @@ def evaluate_model(checkpoint_path, device=None, batch_size=64):
             all_losses.append(loss.item())
     
     # Concatenate all batches
-    predictions = np.concatenate(all_predictions, axis=0)  # (N, 12, 2)
-    targets = np.concatenate(all_targets, axis=0)  # (N, 12, 2)
+    predictions = np.concatenate(all_predictions, axis=0)
+    targets = np.concatenate(all_targets, axis=0)
     
     # Compute metrics
     print("\nComputing metrics...")
@@ -94,7 +112,7 @@ def evaluate_model(checkpoint_path, device=None, batch_size=64):
     rmse = np.sqrt(mse)
     
     # ADE: Average Displacement Error
-    distances = np.linalg.norm(predictions - targets, axis=2)  # (N, 12)
+    distances = np.linalg.norm(predictions[:, :, :2] - targets[:, :, :2], axis=2)
     ade = np.mean(distances)
     ade_std = np.std(distances)
     

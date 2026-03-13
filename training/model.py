@@ -57,7 +57,8 @@ class TransformerTrajectoryPredictor(nn.Module):
         self,
         num_input_frames=4,  # Number of history frames
         num_output_frames=12, # Number of prediction frames
-        num_features=2,      # Number of features per frame (x, y)
+        num_input_features=2,  # Number of input features per frame (x, y, vx, vy, etc.)
+        num_output_features=2, # Number of output features per frame (usually x, y)
         d_model=64,          # Hidden dimension
         nhead=8,             # Number of attention heads
         num_layers=4,        # Number of transformer encoder layers
@@ -69,7 +70,8 @@ class TransformerTrajectoryPredictor(nn.Module):
         Args:
             num_input_frames: Number of history frames
             num_output_frames: Number of prediction frames
-            num_features: Number of features per frame (e.g., 2 for x,y or 4 for x,y,vx,vy)
+            num_input_features: Number of input features per frame
+            num_output_features: Number of output features per frame
             d_model: Hidden dimension of transformer
             nhead: Number of attention heads
             num_layers: Number of transformer encoder layers
@@ -82,13 +84,15 @@ class TransformerTrajectoryPredictor(nn.Module):
         # Calculate input/output dimensions from frame/feature counts
         self.num_input_frames = num_input_frames
         self.num_output_frames = num_output_frames
-        self.num_features = num_features
-        self.input_dim = num_input_frames * num_features
-        self.output_dim = num_output_frames * num_features
+        self.num_input_features = num_input_features
+        self.num_output_features = num_output_features
+        self.input_dim = num_input_frames * num_input_features
+        self.output_dim = num_output_frames * num_output_features
         self.d_model = d_model
         
-        # Input embedding layer: projects flat history to embedding dimension
-        self.input_embedding = nn.Linear(self.input_dim, d_model)
+        # Input embedding layer: projects each frame independently to embedding dimension.
+        # This creates one transformer token per history frame so attention operates across time.
+        self.input_embedding = nn.Linear(self.num_input_features, d_model)
         
         # Positional encoding for sequence order
         self.positional_encoding = PositionalEncoding(
@@ -124,38 +128,97 @@ class TransformerTrajectoryPredictor(nn.Module):
         Forward pass.
         
         Args:
-            x: Input trajectories of shape (batch_size, 4, 2)
-               where 4 is number of history frames and 2 is (x, y) coordinate
+            x: Input trajectories of shape (batch_size, num_input_frames, num_input_features)
         
         Returns:
-            Predicted future trajectories of shape (batch_size, 12, 2)
+            Predicted future trajectories of shape (batch_size, num_output_frames, num_output_features)
         """
         batch_size = x.shape[0]
-        
-        # Flatten history: (batch, 4, 2) -> (batch, 8)
-        x_flat = x.reshape(batch_size, -1)
-        
-        # Embed input: (batch, 8) -> (batch, 1, d_model)
-        # Using unsqueeze to create sequence dimension for transformer
-        x_embed = self.input_embedding(x_flat).unsqueeze(1)
-        
-        # Add positional encoding: (batch, 1, d_model)
+
+        # Embed each history frame independently: (batch, H, F_in) -> (batch, H, d_model)
+        x_embed = self.input_embedding(x)
+
+        # Add positional encoding so the model knows frame order.
         x_encoded = self.positional_encoding(x_embed)
-        
-        # Transformer encoder: (batch, 1, d_model) -> (batch, 1, d_model)
+
+        # Transformer encoder attends across the history frames: (batch, H, d_model)
         x_transformer = self.transformer_encoder(x_encoded)
-        
-        # Take the output from the transformer and pass through output head
-        # (batch, 1, d_model) -> (batch, d_model) -> (batch, output_dim)
-        output = self.output_head(x_transformer.squeeze(1))
-        
-        # Reshape to trajectory format: (batch, output_dim) -> (batch, num_output_frames, num_features)
-        output = output.reshape(batch_size, self.num_output_frames, self.num_features)
+
+        # Use the final history token as the summary representation.
+        sequence_summary = x_transformer[:, -1, :]
+
+        # Project to future trajectory space: (batch, d_model) -> (batch, T * F_out)
+        output = self.output_head(sequence_summary)
+
+        # Reshape to trajectory format: (batch, T * F_out) -> (batch, T, F_out)
+        output = output.reshape(batch_size, self.num_output_frames, self.num_output_features)
         
         return output
 
 
-def create_model(num_input_frames=4, num_output_frames=12, num_features=2, 
+class LegacyFlattenedTransformerTrajectoryPredictor(nn.Module):
+    """Previous flattened single-token variant kept for old checkpoint loading."""
+
+    def __init__(
+        self,
+        num_input_frames=4,
+        num_output_frames=12,
+        num_input_features=2,
+        num_output_features=2,
+        d_model=64,
+        nhead=8,
+        num_layers=4,
+        dim_feedforward=256,
+        dropout=0.1,
+        activation='relu'
+    ):
+        super().__init__()
+
+        self.num_input_frames = num_input_frames
+        self.num_output_frames = num_output_frames
+        self.num_input_features = num_input_features
+        self.num_output_features = num_output_features
+        self.input_dim = num_input_frames * num_input_features
+        self.output_dim = num_output_frames * num_output_features
+        self.d_model = d_model
+
+        self.input_embedding = nn.Linear(self.input_dim, d_model)
+        self.positional_encoding = PositionalEncoding(
+            d_model=d_model,
+            max_len=5000,
+            dropout=dropout
+        )
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            activation=activation,
+            batch_first=True
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=num_layers
+        )
+        self.output_head = nn.Sequential(
+            nn.Linear(d_model, dim_feedforward),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim_feedforward, self.output_dim)
+        )
+
+    def forward(self, x):
+        batch_size = x.shape[0]
+        x_flat = x.reshape(batch_size, -1)
+        x_embed = self.input_embedding(x_flat).unsqueeze(1)
+        x_encoded = self.positional_encoding(x_embed)
+        x_transformer = self.transformer_encoder(x_encoded)
+        output = self.output_head(x_transformer.squeeze(1))
+        return output.reshape(batch_size, self.num_output_frames, self.num_output_features)
+
+
+def create_model(num_input_frames=4, num_output_frames=12,
+                 num_input_features=2, num_output_features=2,
                  device='cuda' if torch.cuda.is_available() else 'cpu', **kwargs):
     """
     Factory function to create and initialize the model.
@@ -163,7 +226,8 @@ def create_model(num_input_frames=4, num_output_frames=12, num_features=2,
     Args:
         num_input_frames: Number of history frames
         num_output_frames: Number of prediction frames
-        num_features: Number of features per frame
+        num_input_features: Number of input features per frame
+        num_output_features: Number of output features per frame
         device: Device to place model on ('cuda' or 'cpu')
         **kwargs: Additional arguments to pass to TransformerTrajectoryPredictor
     
@@ -173,7 +237,8 @@ def create_model(num_input_frames=4, num_output_frames=12, num_features=2,
     model = TransformerTrajectoryPredictor(
         num_input_frames=num_input_frames,
         num_output_frames=num_output_frames,
-        num_features=num_features,
+        num_input_features=num_input_features,
+        num_output_features=num_output_features,
         **kwargs
     )
     model = model.to(device)
@@ -186,7 +251,13 @@ if __name__ == '__main__':
     
     # Example 1: Default (4 input frames, 12 output frames, 2 features)
     print("Example 1: Standard (x, y)")
-    model = create_model(num_input_frames=4, num_output_frames=12, num_features=2, device=device)
+    model = create_model(
+        num_input_frames=4,
+        num_output_frames=12,
+        num_input_features=2,
+        num_output_features=2,
+        device=device
+    )
     x = torch.randn(4, 4, 2).to(device)
     
     # Forward pass
@@ -201,8 +272,14 @@ if __name__ == '__main__':
     print(f"Parameters: {trainable_params:,}\n")
     
     # Example 2: With velocity (x, y, vx, vy)
-    print("Example 2: With velocity (x, y, vx, vy)")
-    model_with_vel = create_model(num_input_frames=4, num_output_frames=12, num_features=4, device=device)
+    print("Example 2: With velocity input (x, y, vx, vy) and position-only output")
+    model_with_vel = create_model(
+        num_input_frames=4,
+        num_output_frames=12,
+        num_input_features=4,
+        num_output_features=2,
+        device=device
+    )
     x_vel = torch.randn(4, 4, 4).to(device)  # 4 features
     y_vel = model_with_vel(x_vel)
     print(f"Input shape: {x_vel.shape}, Output shape: {y_vel.shape}")
@@ -211,7 +288,13 @@ if __name__ == '__main__':
     
     # Example 3: More prediction frames
     print("Example 3: More prediction frames (20 frames ahead instead of 12)")
-    model_20frames = create_model(num_input_frames=4, num_output_frames=20, num_features=2, device=device)
+    model_20frames = create_model(
+        num_input_frames=4,
+        num_output_frames=20,
+        num_input_features=2,
+        num_output_features=2,
+        device=device
+    )
     y_20 = model_20frames(x)
     print(f"Input shape: {x.shape}, Output shape: {y_20.shape}")
     total_params_20 = sum(p.numel() for p in model_20frames.parameters())

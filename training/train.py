@@ -190,9 +190,9 @@ def validate(model, test_loader, criterion, device):
 
 
 def train(
-    num_epochs=50,
+    num_epochs=100,
     batch_size=32,
-    learning_rate=1e-3,
+    learning_rate=5e-4,
     device=None,
     checkpoint_dir=None,
     d_model=64,
@@ -245,18 +245,19 @@ def train(
     print(f"Test set:  {len(test_idx):,} trajectories")
     
     # Extract dimensions from data (flexible to any feature set)
-    num_input_frames, num_features = train_x.shape[1:]
-    num_output_frames, _ = train_y.shape[1:]
+    num_input_frames, num_input_features = train_x.shape[1:]
+    num_output_frames, num_output_features = train_y.shape[1:]
     
     # Create model
     print("\nCreating model...")
-    print(f"  Input: {num_input_frames} frames × {num_features} features")
-    print(f"  Output: {num_output_frames} frames × {num_features} features")
+    print(f"  Input: {num_input_frames} frames × {num_input_features} features")
+    print(f"  Output: {num_output_frames} frames × {num_output_features} features")
     
     model = TransformerTrajectoryPredictor(
         num_input_frames=num_input_frames,
         num_output_frames=num_output_frames,
-        num_features=num_features,
+        num_input_features=num_input_features,
+        num_output_features=num_output_features,
         d_model=d_model,
         nhead=nhead,
         num_layers=num_layers,
@@ -274,8 +275,10 @@ def train(
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, 
         mode='min', 
-        factor=0.5, 
-        patience=5, 
+        factor=0.5,
+        patience=10,
+        cooldown=2,
+        min_lr=1e-6,
         verbose=True
     )
     criterion = nn.MSELoss()
@@ -341,7 +344,12 @@ def train(
                     'nhead': nhead,
                     'num_layers': num_layers,
                     'learning_rate': learning_rate,
-                    'batch_size': batch_size
+                    'batch_size': batch_size,
+                    'num_input_frames': num_input_frames,
+                    'num_input_features': num_input_features,
+                    'num_output_frames': num_output_frames,
+                    'num_output_features': num_output_features,
+                    'architecture_version': 'temporal_tokens_v2'
                 }
             }
             
@@ -359,7 +367,12 @@ def train(
             'nhead': nhead,
             'num_layers': num_layers,
             'learning_rate': learning_rate,
-            'batch_size': batch_size
+            'batch_size': batch_size,
+            'num_input_frames': num_input_frames,
+            'num_input_features': num_input_features,
+            'num_output_frames': num_output_frames,
+            'num_output_features': num_output_features,
+            'architecture_version': 'temporal_tokens_v2'
         }
     }
     torch.save(final_checkpoint, checkpoint_dir / 'final_model.pt')
@@ -383,9 +396,9 @@ def train(
 if __name__ == '__main__':
     # Train model
     model, history = train(
-        num_epochs=50,
+        num_epochs=100,
         batch_size=32,
-        learning_rate=1e-3,
+        learning_rate=5e-4,
         d_model=64,
         nhead=8,
         num_layers=4

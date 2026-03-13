@@ -5,20 +5,30 @@ Example usage script showing how to use the trained model for inference.
 
 import torch
 from pathlib import Path
-from model import TransformerTrajectoryPredictor
+from model import TransformerTrajectoryPredictor, LegacyFlattenedTransformerTrajectoryPredictor
 
 
 def load_checkpoint(checkpoint_path, device='cuda' if torch.cuda.is_available() else 'cpu'):
     """Load a trained model from checkpoint."""
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     
     # Get hyperparameters
     hyperparams = checkpoint.get('hyperparameters', {})
     
-    # Create model
-    model = TransformerTrajectoryPredictor(
-        input_dim=8,
-        output_dim=24,
+    num_input_frames = hyperparams.get('num_input_frames', 4)
+    num_input_features = hyperparams.get('num_input_features', 2)
+    num_output_frames = hyperparams.get('num_output_frames', 12)
+    num_output_features = hyperparams.get('num_output_features', 2)
+
+    input_embedding_weight = checkpoint['model_state_dict']['input_embedding.weight']
+    uses_legacy_flattened_model = input_embedding_weight.shape[1] == num_input_frames * num_input_features
+    model_cls = LegacyFlattenedTransformerTrajectoryPredictor if uses_legacy_flattened_model else TransformerTrajectoryPredictor
+
+    model = model_cls(
+        num_input_frames=num_input_frames,
+        num_output_frames=num_output_frames,
+        num_input_features=num_input_features,
+        num_output_features=num_output_features,
         d_model=hyperparams.get('d_model', 64),
         nhead=hyperparams.get('nhead', 8),
         num_layers=hyperparams.get('num_layers', 4),
@@ -93,7 +103,7 @@ def main():
     print("Example 1: Single Trajectory Prediction")
     print("=" * 60)
     
-    # Create dummy history: 4 frames, 2 coordinates
+    # Create dummy history matching the default baseline setup
     history = torch.randn(4, 2)
     print(f"History shape: {history.shape}")
     print(f"History (first 2 frames):\n{history[:2]}\n")
@@ -148,9 +158,9 @@ Coordinate System:
     print("=" * 60)
     print("✓ Example completed successfully!")
     print("\nTo train your own model:")
-    print("  python scripts/train.py")
+    print("  python training/train.py")
     print("\nTo evaluate model performance:")
-    print("  python scripts/eval.py")
+    print("  python training/eval.py")
     print("=" * 60)
 
 
