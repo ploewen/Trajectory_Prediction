@@ -17,8 +17,8 @@ Changes compared to preprocess_v1:
    - Static objects and animals are excluded from the dataset.
    - Only the following categories are kept for trajectory prediction:
         - vehicle
-        - human
-        - movable_object
+        - # human 
+        - # movable_object
 
 4. Output format
    - Generates tensors for trajectory prediction:
@@ -56,8 +56,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATAROOT = PROJECT_ROOT / "data"
 
 # dataset: mini / trainval
-VERSION = "v1.0-mini"
-# VERSION = "v1.0-trainval"
+# VERSION = "v1.0-mini"
+VERSION = "v1.0-trainval"
 
 OUTPUT_DIR = PROJECT_ROOT / "processed"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -110,11 +110,15 @@ def valid_category(category_name: str) -> bool:
         return False
     if category_name.startswith("animal"):
         return False
-
+    if category_name.startswith("human"):
+        return False
+    if category_name.startswith("movable_object"):
+        return False
     return (
-        category_name.startswith("vehicle") or
-        category_name.startswith("human") or
-        category_name.startswith("movable_object")
+        category_name.startswith("vehicle") 
+        # or
+        # category_name.startswith("human") or
+        # category_name.startswith("movable_object")
     )
 
 
