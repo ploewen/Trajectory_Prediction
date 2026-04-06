@@ -278,13 +278,16 @@ def train(
         factor=0.5,
         patience=10,
         cooldown=2,
-        min_lr=1e-6,
-        verbose=True
+        min_lr=1e-6
     )
     criterion = nn.MSELoss()
     
     # Training loop
     print(f"\nTraining for {num_epochs} epochs...\n")
+    csv_metrics_path = checkpoint_dir / 'training_metrics.csv'
+    with open(csv_metrics_path, 'w') as f:
+        f.write("epoch,train_loss,val_loss\n")
+
     history = {
         'epoch': [],
         'train_loss': [],
@@ -328,6 +331,10 @@ def train(
         if 'ade_per_category' in val_metrics:
             for cat_name, cat_ade in val_metrics['ade_per_category'].items():
                 print(f"    {cat_name}: {cat_ade:.4f}")
+
+        # Append CSV row for easy spreadsheet/report usage
+        with open(csv_metrics_path, 'a') as f:
+            f.write(f"{epoch + 1},{train_metrics['loss']},{val_metrics['loss']}\n")
         
         # Save best model
         if val_metrics['loss'] < best_val_loss:
@@ -355,6 +362,9 @@ def train(
             
             checkpoint_path = checkpoint_dir / 'best_model.pt'
             torch.save(checkpoint, checkpoint_path)
+
+            # Extra lightweight best-model state dict for quick loading.
+            torch.save(model.state_dict(), checkpoint_dir / 'transformer_best.pth')
             print(f"  → Saved best model (Val Loss: {val_metrics['loss']:.4f})")
     
     # Save final model
@@ -388,6 +398,7 @@ def train(
     print(f"Training completed in {elapsed_time:.1f} seconds")
     print(f"Best model at epoch {best_epoch} with Val Loss: {best_val_loss:.4f}")
     print(f"Checkpoints saved to: {checkpoint_dir}")
+    print(f"CSV metrics saved to: {csv_metrics_path}")
     print(f"{'='*80}")
     
     return model, history

@@ -14,6 +14,31 @@ from model import TransformerTrajectoryPredictor, LegacyFlattenedTransformerTraj
 from dataset import load_data, create_dataloaders
 
 
+def save_trajectory_plot(history, ground_truth, prediction, index, output_dir):
+    """Save a single trajectory plot (history vs ground truth vs prediction)."""
+    import matplotlib.pyplot as plt
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    plt.figure(figsize=(8, 8))
+    # Blue line for history
+    plt.plot(history[:, 0], history[:, 1], 'b-', label='History', linewidth=2)
+    # Green line for actual future
+    plt.plot(ground_truth[:, 0], ground_truth[:, 1], 'g-', label='Ground Truth', linewidth=2)
+    # Red dashed line for model prediction
+    plt.plot(prediction[:, 0], prediction[:, 1], 'r--', label='Prediction', linewidth=2)
+
+    plt.legend()
+    plt.title(f"Trajectory Prediction {index}")
+    plt.xlabel('x (m)')
+    plt.ylabel('y (m)')
+    plt.axis('equal')
+    plt.grid(alpha=0.3)
+    plt.savefig(output_dir / f"plot_sample_{index}.png", dpi=150, bbox_inches='tight')
+    plt.close()
+
+
 def evaluate_model(checkpoint_path, device=None, batch_size=64):
     """
     Evaluate a trained model on the test set.
@@ -116,9 +141,16 @@ def evaluate_model(checkpoint_path, device=None, batch_size=64):
     ade = np.mean(distances)
     ade_std = np.std(distances)
     
-    # FDE: Final Displacement Error  
-    fde = np.mean(distances[:, -1])
-    fde_std = np.std(distances[:, -1])
+    # FDE: Final Displacement Error
+    final_distances = distances[:, -1]
+    fde = np.mean(final_distances)
+    fde_std = np.std(final_distances)
+
+    # Min/max stats for reporting spreadsheets
+    ade_min = np.min(distances)
+    ade_max = np.max(distances)
+    fde_min = np.min(final_distances)
+    fde_max = np.max(final_distances)
     
     # MR: Miss Rate (proportion of predictions with error > threshold)
     thresholds = [0.5, 1.0, 2.0]
@@ -135,8 +167,12 @@ def evaluate_model(checkpoint_path, device=None, batch_size=64):
         'rmse': float(rmse),
         'ade': float(ade),
         'ade_std': float(ade_std),
+        'ade_min': float(ade_min),
+        'ade_max': float(ade_max),
         'fde': float(fde),
         'fde_std': float(fde_std),
+        'fde_min': float(fde_min),
+        'fde_max': float(fde_max),
         'miss_rates': miss_rates,
         'per_frame_ade': per_frame_ade.tolist(),
         'num_test_samples': len(predictions)
@@ -176,7 +212,9 @@ def main(checkpoint_path=None):
     print(f"  RMSE: {metrics['rmse']:.6f}")
     print(f"\nTrajectory Prediction Metrics:")
     print(f"  ADE (Average Displacement Error): {metrics['ade']:.4f}m (±{metrics['ade_std']:.4f})")
+    print(f"  ADE min/max: {metrics['ade_min']:.4f}m / {metrics['ade_max']:.4f}m")
     print(f"  FDE (Final Displacement Error):   {metrics['fde']:.4f}m (±{metrics['fde_std']:.4f})")
+    print(f"  FDE min/max: {metrics['fde_min']:.4f}m / {metrics['fde_max']:.4f}m")
     print(f"\nMiss Rates (proportion exceeding threshold):")
     for thresh, mr in metrics['miss_rates'].items():
         print(f"  > {thresh}: {mr:.2%}")
@@ -190,6 +228,39 @@ def main(checkpoint_path=None):
     with open(metrics_path, 'w') as f:
         json.dump(metrics, f, indent=2)
     print(f"\nMetrics saved to: {metrics_path}")
+
+    # Save raw prediction tensor for downstream analysis.
+    raw_preds_path = checkpoint_path.parent / 'transformer_raw_predictions.pt'
+    torch.save(torch.tensor(predictions), raw_preds_path)
+    print(f"Raw predictions saved to: {raw_preds_path}")
+
+    # Optional: save a few qualitative plots (history/GT/prediction).
+    try:
+        script_dir = Path(__file__).parent
+        project_dir = script_dir.parent
+        train_x, _, scene_ids = load_data(device='cpu')
+        train_mask = scene_ids < 700
+        test_indices = torch.where(~train_mask)[0]
+        plots_dir = checkpoint_path.parent / 'trajectory_plots'
+
+        num_plots = min(5, len(predictions), len(test_indices))
+        for i in range(num_plots):
+            history = train_x[test_indices[i]].cpu().numpy()[:, :2]
+            gt = targets[i][:, :2]
+            pred = predictions[i][:, :2]
+            save_trajectory_plot(history, gt, pred, i, plots_dir)
+        print(f"Saved {num_plots} trajectory plots to: {plots_dir}")
+    except Exception as e:
+        print(f"Plot generation skipped: {e}")
+
+    # Excel/CSV one-line summary for spreadsheet paste.
+    per_frame_str = ",".join([str(x) for x in metrics['per_frame_ade']])
+    print("\nSpreadsheet row:")
+    print(
+        f"car,transformer,{metrics['num_test_samples']},{metrics['ade']},{metrics['ade_std']},"
+        f"{metrics['ade_min']},{metrics['ade_max']},{metrics['fde']},{metrics['fde_std']},"
+        f"{metrics['fde_min']},{metrics['fde_max']},{per_frame_str}"
+    )
     
     return metrics
 

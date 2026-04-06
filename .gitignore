@@ -15,3 +15,6 @@ SUMMARY.md
 
 # Jupyter cache
 .ipynb_checkpoints/
+
+# Local migration safety backups
+_migration_backups/
