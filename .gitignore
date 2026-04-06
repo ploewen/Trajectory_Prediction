@@ -1,1 +1,17 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+
+# Logs and local runtime outputs
+*.log
+nohup.out
+
+# Training artifacts
+checkpoints/
+transformer_model/checkpoints/
+
+# Local-only docs/notes
 SUMMARY.md
+
+# Jupyter cache
+.ipynb_checkpoints/
