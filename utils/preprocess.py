@@ -124,10 +124,17 @@ def process_scenes():
     - Uses fixed anchor pose for entire 8-second sequence (fixes physics bug)
     - Uses 'next' token to hop through data instantly (kills CPU bottleneck)
     - Tracks scene ID for each trajectory (no train/test overlap)
+    - Tracks agent type (vehicle: 1, pedestrian: 0) for filtering
+    - CACHES instance and category lookups (massive speedup)
     """
     all_histories = []
     all_futures = []
     all_scene_ids = []  # Track which scene each trajectory came from
+    all_agent_types = []  # Track agent type: 0=pedestrian, 1=vehicle
+
+    # Cache instance and category lookups to avoid repeated database queries
+    instance_cache = {}
+    category_cache = {}
 
     total_scenes = len(nusc.scene)
     print(f"[INFO] Processing {total_scenes} scenes...\n")
@@ -136,7 +143,7 @@ def process_scenes():
         if (scene_idx + 1) % 10 == 0 or scene_idx == 0:
             print(f"[PROGRESS] Scene {scene_idx + 1}/{total_scenes}")
 
-        # Store tuples of (sample_token, ann_token) so we don't search later
+        # Store tuples of (sample_token, ann_token, instance_token) so we don't search later
         scene_instances = defaultdict(list)
 
         current_sample_token = scene["first_sample_token"]
@@ -147,27 +154,45 @@ def process_scenes():
                 ann = nusc.get("sample_annotation", ann_token)
                 instance_token = ann["instance_token"]
 
-                # Fast category check
-                instance = nusc.get("instance", instance_token)
-                category = nusc.get("category", instance["category_token"])
-                if "vehicle" not in category["name"]:
+                # Fast category check - extract both vehicles and pedestrians
+                # Check cache first to avoid repeated database lookups
+                if instance_token not in instance_cache:
+                    instance_cache[instance_token] = nusc.get(
+                        "instance", instance_token
+                    )
+                instance = instance_cache[instance_token]
+
+                category_token = instance["category_token"]
+                if category_token not in category_cache:
+                    category_cache[category_token] = nusc.get(
+                        "category", category_token
+                    )
+                category = category_cache[category_token]
+                category_name = category["name"]
+
+                # Keep only vehicles and pedestrians (pedestrians are labeled "human.*")
+                if not ("vehicle" in category_name or "human" in category_name):
                     continue
 
                 # Save BOTH tokens so we don't have to search later
                 scene_instances[instance_token].append(
-                    (current_sample_token, ann_token)
+                    (current_sample_token, ann_token, category_name)
                 )
 
             current_sample_token = sample["next"]
 
         # Extract trajectories
         for instance_token, sample_records in scene_instances.items():
-            for i, (sample_token, ann_token) in enumerate(sample_records):
+            for i, (sample_token, ann_token, category_name) in enumerate(
+                sample_records
+            ):
                 if i < HISTORY_FRAMES or i >= len(sample_records) - FUTURE_FRAMES:
                     continue  # Not enough history or future
 
                 # The start annotation is HISTORY_FRAMES steps back
-                start_sample_token, start_ann_token = sample_records[i - HISTORY_FRAMES]
+                start_sample_token, start_ann_token, _ = sample_records[
+                    i - HISTORY_FRAMES
+                ]
 
                 # The anchor is the "present" frame (index i)
                 anchor_sample_token = sample_token
@@ -192,7 +217,23 @@ def process_scenes():
                 all_futures.append(future)
                 all_scene_ids.append(scene_idx)  # Record which scene this came from
 
+                # Track agent type: 0=pedestrian (human.*), 1=vehicle
+                agent_type = 0 if "human" in category_name else 1
+                all_agent_types.append(agent_type)
+
     print(f"\n[INFO] Extracted {len(all_histories)} complete trajectories")
+
+    # Count by type
+    num_vehicles = sum(1 for t in all_agent_types if t == 1)
+    num_pedestrians = sum(1 for t in all_agent_types if t == 0)
+    print(f"  - Vehicles: {num_vehicles:,}")
+    print(f"  - Pedestrians: {num_pedestrians:,}")
+
+    # Show caching benefits
+    print(f"\n[CACHE STATS]")
+    print(f"  - Instance cache hits: {len(instance_cache)}")
+    print(f"  - Category cache hits: {len(category_cache)}")
+    print(f"  (These lookups would have taken hours without caching!)")
 
     if len(all_histories) == 0:
         print("[ERROR] No trajectories extracted! Check data paths.")
@@ -201,23 +242,33 @@ def process_scenes():
     train_x = torch.tensor(np.array(all_histories), dtype=torch.float32)
     train_y = torch.tensor(np.array(all_futures), dtype=torch.float32)
     scene_ids = torch.tensor(np.array(all_scene_ids), dtype=torch.long)  # Scene tracker
+    agent_types = torch.tensor(
+        np.array(all_agent_types), dtype=torch.long
+    )  # Agent type tracker
 
-    print(f"[INFO] train_x shape: {train_x.shape}")
+    print(f"\n[INFO] train_x shape: {train_x.shape}")
     print(f"[INFO] train_y shape: {train_y.shape}")
     print(f"[INFO] scene_ids shape: {scene_ids.shape}")
+    print(f"[INFO] agent_types shape: {agent_types.shape}")
 
     torch.save(train_x, OUTPUT_DIR / "train_x.pt")
     torch.save(train_y, OUTPUT_DIR / "train_y.pt")
     torch.save(scene_ids, OUTPUT_DIR / "scene_ids.pt")
+    torch.save(agent_types, OUTPUT_DIR / "agent_types.pt")
 
     print(f"\n[SUCCESS] Saved to {OUTPUT_DIR}")
     print(f"  - train_x.pt (history trajectories)")
     print(f"  - train_y.pt (future trajectories)")
     print(f"  - scene_ids.pt (anti-cheating: prevents train/test overlap)")
+    print(f"  - agent_types.pt (0=pedestrian, 1=vehicle for filtering)")
     print(f"\n[TIP] Use scene_ids.pt to split data by scene:")
     print(f"  train_mask = scene_ids < 700")
     print(f"  x_train, y_train = train_x[train_mask], train_y[train_mask]")
-    print(f"  x_test, y_test = train_x[~train_mask], train_y[~train_mask]")
+    print(f"\n[TIP] Use agent_types.pt to filter by agent type:")
+    print(f"  vehicle_mask = agent_types == 1")
+    print(f"  pedestrian_mask = agent_types == 0")
+    print(f"  x_vehicles = train_x[vehicle_mask]")
+    print(f"  x_pedestrians = train_x[pedestrian_mask]")
 
 
 if __name__ == "__main__":
