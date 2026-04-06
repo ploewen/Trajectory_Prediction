@@ -6,12 +6,28 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from pathlib import Path
+import argparse
 import json
 import time
 from tqdm import tqdm
 
 from model import TransformerTrajectoryPredictor, create_model
 from dataset import load_data, create_dataloaders
+
+
+def resolve_data_dir(project_dir, agent, features):
+    """Resolve data directory for an experiment with fallback to baseline data/."""
+    candidate = project_dir / 'data' / agent / features
+    required = ['train_x.pt', 'train_y.pt', 'scene_ids.pt']
+
+    if candidate.exists() and all((candidate / name).exists() for name in required):
+        print(f"Using experiment-specific data dir: {candidate}")
+        return candidate
+
+    fallback = project_dir / 'data'
+    print(f"Using fallback data dir: {fallback}")
+    print(f"(Expected {candidate} for agent={agent}, features={features})")
+    return fallback
 
 
 def compute_metrics(predictions, targets):
@@ -195,6 +211,9 @@ def train(
     learning_rate=5e-4,
     device=None,
     checkpoint_dir=None,
+    data_dir=None,
+    agent='car',
+    features='baseline',
     d_model=64,
     nhead=8,
     num_layers=4
@@ -207,7 +226,10 @@ def train(
         batch_size: Batch size
         learning_rate: Initial learning rate
         device: Device to train on (defaults to GPU if available)
-        checkpoint_dir: Directory to save checkpoints
+        checkpoint_dir: Directory to save checkpoints (if None, uses checkpoints/{agent}_{features})
+        data_dir: Directory containing train_x.pt/train_y.pt/scene_ids.pt
+        agent: Agent type experiment key (e.g., car, pedestrian)
+        features: Feature set experiment key (e.g., baseline, velocity, map, probabilistic)
         d_model: Hidden dimension
         nhead: Number of attention heads
         num_layers: Number of transformer layers
@@ -218,19 +240,28 @@ def train(
     print(f"Using device: {device}")
     
     # Setup checkpoint directory
+    script_dir = Path(__file__).parent
+    project_dir = script_dir.parent
+    experiment_name = f"{agent}_{features}"
+
     if checkpoint_dir is None:
-        script_dir = Path(__file__).parent
-        project_dir = script_dir.parent
-        checkpoint_dir = project_dir / 'checkpoints'
+        checkpoint_dir = project_dir / 'checkpoints' / experiment_name
     else:
         checkpoint_dir = Path(checkpoint_dir)
     
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     print(f"Checkpoint directory: {checkpoint_dir}")
+    print(f"Experiment: agent={agent}, features={features}")
+
+    if data_dir is None:
+        data_dir = resolve_data_dir(project_dir, agent, features)
+    else:
+        data_dir = Path(data_dir)
+        print(f"Using explicit data dir: {data_dir}")
     
     # Load data
     print("\nLoading data...")
-    train_x, train_y, scene_ids = load_data(device=device)
+    train_x, train_y, scene_ids = load_data(data_dir=data_dir, device=device)
     
     # Create dataloaders
     print("\nCreating dataloaders...")
@@ -352,6 +383,8 @@ def train(
                     'num_layers': num_layers,
                     'learning_rate': learning_rate,
                     'batch_size': batch_size,
+                    'agent': agent,
+                    'features': features,
                     'num_input_frames': num_input_frames,
                     'num_input_features': num_input_features,
                     'num_output_frames': num_output_frames,
@@ -378,6 +411,8 @@ def train(
             'num_layers': num_layers,
             'learning_rate': learning_rate,
             'batch_size': batch_size,
+            'agent': agent,
+            'features': features,
             'num_input_frames': num_input_frames,
             'num_input_features': num_input_features,
             'num_output_frames': num_output_frames,
@@ -405,12 +440,32 @@ def train(
 
 
 if __name__ == '__main__':
-    # Train model
-    model, history = train(
-        num_epochs=100,
-        batch_size=32,
-        learning_rate=5e-4,
-        d_model=64,
-        nhead=8,
-        num_layers=4
+    parser = argparse.ArgumentParser(description='Train transformer trajectory predictor')
+    parser.add_argument('--agent', choices=['car', 'pedestrian'], default='car',
+                        help='Agent type experiment key')
+    parser.add_argument('--features', choices=['baseline', 'velocity', 'map', 'probabilistic'],
+                        default='baseline', help='Feature set experiment key')
+    parser.add_argument('--num-epochs', type=int, default=100)
+    parser.add_argument('--batch-size', type=int, default=32)
+    parser.add_argument('--learning-rate', type=float, default=5e-4)
+    parser.add_argument('--d-model', type=int, default=64)
+    parser.add_argument('--nhead', type=int, default=8)
+    parser.add_argument('--num-layers', type=int, default=4)
+    parser.add_argument('--data-dir', type=str, default=None,
+                        help='Optional explicit data directory')
+    parser.add_argument('--checkpoint-dir', type=str, default=None,
+                        help='Optional explicit checkpoint directory')
+    args = parser.parse_args()
+
+    train(
+        num_epochs=args.num_epochs,
+        batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
+        checkpoint_dir=args.checkpoint_dir,
+        data_dir=args.data_dir,
+        agent=args.agent,
+        features=args.features,
+        d_model=args.d_model,
+        nhead=args.nhead,
+        num_layers=args.num_layers
     )

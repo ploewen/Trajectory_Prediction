@@ -6,12 +6,28 @@ Computes metrics like ADE, FDE, and MSE on test set.
 import torch
 import torch.nn as nn
 from pathlib import Path
+import argparse
 import json
 import numpy as np
 from tqdm import tqdm
 
 from model import TransformerTrajectoryPredictor, LegacyFlattenedTransformerTrajectoryPredictor
 from dataset import load_data, create_dataloaders
+
+
+def resolve_data_dir(project_dir, agent, features):
+    """Resolve data directory for an experiment with fallback to baseline data/."""
+    candidate = project_dir / 'data' / agent / features
+    required = ['train_x.pt', 'train_y.pt', 'scene_ids.pt']
+
+    if candidate.exists() and all((candidate / name).exists() for name in required):
+        print(f"Using experiment-specific data dir: {candidate}")
+        return candidate
+
+    fallback = project_dir / 'data'
+    print(f"Using fallback data dir: {fallback}")
+    print(f"(Expected {candidate} for agent={agent}, features={features})")
+    return fallback
 
 
 def save_trajectory_plot(history, ground_truth, prediction, index, output_dir):
@@ -39,7 +55,7 @@ def save_trajectory_plot(history, ground_truth, prediction, index, output_dir):
     plt.close()
 
 
-def evaluate_model(checkpoint_path, device=None, batch_size=64):
+def evaluate_model(checkpoint_path, device=None, batch_size=64, data_dir=None, agent='car', features='baseline'):
     """
     Evaluate a trained model on the test set.
     
@@ -54,10 +70,19 @@ def evaluate_model(checkpoint_path, device=None, batch_size=64):
     if device is None:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {device}")
+
+    script_dir = Path(__file__).parent
+    project_dir = script_dir.parent
+
+    if data_dir is None:
+        data_dir = resolve_data_dir(project_dir, agent, features)
+    else:
+        data_dir = Path(data_dir)
+        print(f"Using explicit data dir: {data_dir}")
     
     # Load data first to detect actual dimensions
     print("\nLoading data...")
-    train_x, train_y, scene_ids = load_data(device=device)
+    train_x, train_y, scene_ids = load_data(data_dir=data_dir, device=device)
     
     # Create dataloaders
     train_loader, test_loader, train_idx, test_idx = create_dataloaders(
@@ -181,15 +206,18 @@ def evaluate_model(checkpoint_path, device=None, batch_size=64):
     return metrics, predictions, targets
 
 
-def main(checkpoint_path=None):
+def main(checkpoint_path=None, agent='car', features='baseline', batch_size=64, data_dir=None):
     """Main evaluation function."""
-    
+
+    script_dir = Path(__file__).parent
+    project_dir = script_dir.parent
+    experiment_name = f"{agent}_{features}"
+
     # Find best model if no checkpoint specified
     if checkpoint_path is None:
-        script_dir = Path(__file__).parent
-        project_dir = script_dir.parent
-        checkpoint_dir = project_dir / 'checkpoints'
-        checkpoint_path = checkpoint_dir / 'best_model.pt'
+        experiment_ckpt = project_dir / 'checkpoints' / experiment_name / 'best_model.pt'
+        fallback_ckpt = project_dir / 'checkpoints' / 'best_model.pt'
+        checkpoint_path = experiment_ckpt if experiment_ckpt.exists() else fallback_ckpt
     
     checkpoint_path = Path(checkpoint_path)
     
@@ -200,7 +228,13 @@ def main(checkpoint_path=None):
         return
     
     # Evaluate
-    metrics, predictions, targets = evaluate_model(checkpoint_path)
+    metrics, predictions, targets = evaluate_model(
+        checkpoint_path,
+        batch_size=batch_size,
+        data_dir=data_dir,
+        agent=agent,
+        features=features
+    )
     
     # Print results
     print("\n" + "="*80)
@@ -257,7 +291,7 @@ def main(checkpoint_path=None):
     per_frame_str = ",".join([str(x) for x in metrics['per_frame_ade']])
     print("\nSpreadsheet row:")
     print(
-        f"car,transformer,{metrics['num_test_samples']},{metrics['ade']},{metrics['ade_std']},"
+        f"{agent},transformer_{features},{metrics['num_test_samples']},{metrics['ade']},{metrics['ade_std']},"
         f"{metrics['ade_min']},{metrics['ade_max']},{metrics['fde']},{metrics['fde_std']},"
         f"{metrics['fde_min']},{metrics['fde_max']},{per_frame_str}"
     )
@@ -266,6 +300,22 @@ def main(checkpoint_path=None):
 
 
 if __name__ == '__main__':
-    import sys
-    checkpoint_path = sys.argv[1] if len(sys.argv) > 1 else None
-    main(checkpoint_path)
+    parser = argparse.ArgumentParser(description='Evaluate transformer trajectory predictor')
+    parser.add_argument('checkpoint_path', nargs='?', default=None,
+                        help='Optional checkpoint path; defaults to checkpoints/{agent}_{features}/best_model.pt')
+    parser.add_argument('--agent', choices=['car', 'pedestrian'], default='car',
+                        help='Agent type experiment key')
+    parser.add_argument('--features', choices=['baseline', 'velocity', 'map', 'probabilistic'],
+                        default='baseline', help='Feature set experiment key')
+    parser.add_argument('--batch-size', type=int, default=64)
+    parser.add_argument('--data-dir', type=str, default=None,
+                        help='Optional explicit data directory')
+    args = parser.parse_args()
+
+    main(
+        checkpoint_path=args.checkpoint_path,
+        agent=args.agent,
+        features=args.features,
+        batch_size=args.batch_size,
+        data_dir=args.data_dir
+    )
