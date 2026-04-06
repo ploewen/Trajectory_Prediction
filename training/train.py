@@ -1,5 +1,5 @@
 """
-Training script for Transformer-based trajectory prediction model.
+Training script for RNN-based trajectory prediction model.
 """
 
 import torch
@@ -10,7 +10,7 @@ import json
 import time
 from tqdm import tqdm
 
-from model import TransformerTrajectoryPredictor, create_model, LSTMGRUPredictor
+from model import create_model, LSTMGRUPredictor
 from dataset import load_data, create_dataloaders
 
 
@@ -189,14 +189,15 @@ def validate(model, test_loader, criterion, device):
 
 
 def train(
-    num_epochs=50,
+    num_epochs=25,
     batch_size=32,
     learning_rate=1e-3,
     device=None,
     checkpoint_dir=None,
-    d_model=64,
+    d_model=32,
     nhead=8,
     num_layers=4,
+    num_workers=4,
 ):
     """
     Full training pipeline.
@@ -210,6 +211,7 @@ def train(
         d_model: Hidden dimension
         nhead: Number of attention heads
         num_layers: Number of transformer layers
+        num_workers: Number of DataLoader worker processes
     """
     # Setup device
     if device is None:
@@ -238,6 +240,7 @@ def train(
         train_y,
         scene_ids,
         batch_size=batch_size,
+        num_workers=num_workers,
         device=device,
         shuffle_train=True,
     )
@@ -379,7 +382,8 @@ if __name__ == "__main__":
         num_epochs=25,
         batch_size=32,
         learning_rate=1e-3,
-        d_model=32,
+        d_model=16,
         nhead=8,
         num_layers=4,
+        num_workers=4,
     )
