@@ -1,0 +1,19 @@
+{
+  "stage_name": "cars_baseline",
+  "description": "Cars: position only",
+  "agent_types": [
+    "vehicle"
+  ],
+  "include_velocity": false,
+  "selected_map_features": null,
+  "probabilistic": false,
+  "append_map_to_existing": false,
+  "num_epochs": 100,
+  "batch_size": 512,
+  "learning_rate": 0.001,
+  "num_training_samples": 210385,
+  "num_test_samples": 23563,
+  "best_epoch": 69,
+  "best_val_loss": 11.622707971867095,
+  "training_time_seconds": 880.8734323978424
+}

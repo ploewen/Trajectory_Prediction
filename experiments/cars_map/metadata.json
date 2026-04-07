@@ -1,0 +1,22 @@
+{
+  "stage_name": "cars_map",
+  "description": "Cars: position + lane_type_road + drivable_area",
+  "agent_types": [
+    "vehicle"
+  ],
+  "include_velocity": false,
+  "selected_map_features": [
+    "lane_type_road",
+    "drivable_area"
+  ],
+  "probabilistic": false,
+  "append_map_to_existing": false,
+  "num_epochs": 100,
+  "batch_size": 512,
+  "learning_rate": 0.001,
+  "num_training_samples": 210385,
+  "num_test_samples": 23563,
+  "best_epoch": 81,
+  "best_val_loss": 6.035414392009694,
+  "training_time_seconds": 875.8864798545837
+}

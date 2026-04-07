@@ -1,0 +1,22 @@
+{
+  "stage_name": "pedestrian_map",
+  "description": "Pedestrian: position + has_crosswalk + drivable_area",
+  "agent_types": [
+    "pedestrian"
+  ],
+  "include_velocity": false,
+  "selected_map_features": [
+    "has_crosswalk",
+    "drivable_area"
+  ],
+  "probabilistic": false,
+  "append_map_to_existing": false,
+  "num_epochs": 100,
+  "batch_size": 512,
+  "learning_rate": 0.001,
+  "num_training_samples": 65716,
+  "num_test_samples": 11171,
+  "best_epoch": 91,
+  "best_val_loss": 0.5548381134867668,
+  "training_time_seconds": 281.81068205833435
+}

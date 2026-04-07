@@ -1,0 +1,19 @@
+{
+  "stage_name": "pedestrian_baseline",
+  "description": "Pedestrian: position only",
+  "agent_types": [
+    "pedestrian"
+  ],
+  "include_velocity": false,
+  "selected_map_features": null,
+  "probabilistic": false,
+  "append_map_to_existing": false,
+  "num_epochs": 100,
+  "batch_size": 512,
+  "learning_rate": 0.001,
+  "num_training_samples": 65716,
+  "num_test_samples": 11171,
+  "best_epoch": 93,
+  "best_val_loss": 1.0723933970386332,
+  "training_time_seconds": 280.80773997306824
+}
