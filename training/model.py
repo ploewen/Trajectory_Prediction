@@ -13,30 +13,36 @@ class LSTMGRUPredictor(nn.Module):
     LSTM-GRU based trajectory predictor.
     Encodes history with LSTM and decodes predictions with GRU.
 
-    Input shape:  (B, 4, 2)  - B batch size, 4 history frames, 2 coordinates (x, y)
-    Output shape: (B, 12, 2) - B batch size, 12 future frames, 2 coordinates (x, y)
+    Input shape:  (B, 4, F)  - B batch size, 4 history frames, F features
+    Output shape: (B, 12, O) - B batch size, 12 future frames, O output features
     """
 
     def __init__(
         self,
         history_frames: int = 4,
         future_frames: int = 12,
-        hidden_dim: int = 32,
+        hidden_dim: int = 256,
+        input_features: int = 2,
+        output_features: int = 2,
     ) -> None:
         """
         Args:
             history_frames: Number of history frames (default 4)
             future_frames: Number of future frames to predict (default 12)
             hidden_dim: Hidden dimension size (default 32)
+            input_features: Number of input features per frame
+            output_features: Number of output features per frame (default 2 for x, y)
         """
         super().__init__()
         self.history_frames = history_frames
         self.future_frames = future_frames
         self.hidden_dim = hidden_dim
+        self.input_features = input_features
+        self.output_features = output_features
 
         # LSTM encoder: processes trajectory history
         self.encoder = nn.LSTM(
-            input_size=2,
+            input_size=input_features,
             hidden_size=hidden_dim,
             batch_first=True,
         )
@@ -55,20 +61,20 @@ class LSTMGRUPredictor(nn.Module):
         )
 
         # Input projection for decoder
-        self.decoder_input = nn.Linear(2, hidden_dim)
+        self.decoder_input = nn.Linear(output_features, hidden_dim)
 
-        # Output projection to (x, y) coordinates
-        self.output_layer = nn.Linear(hidden_dim, 2)
+        # Output projection to features
+        self.output_layer = nn.Linear(hidden_dim, output_features)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Forward pass.
 
         Args:
-            x: Input trajectories of shape (batch_size, history_frames, 2)
+            x: Input trajectories of shape (batch_size, history_frames, input_features)
 
         Returns:
-            Predicted trajectories of shape (batch_size, future_frames, 2)
+            Predicted trajectories of shape (batch_size, future_frames, output_features)
         """
         # Encode history
         encoder_outputs, (hidden_state, _) = self.encoder(x)
@@ -85,12 +91,12 @@ class LSTMGRUPredictor(nn.Module):
         # Initialize decoder hidden state
         decoder_hidden = decoder_seed.unsqueeze(0)  # (1, B, hidden_dim)
 
-        # Start with last position from history
-        prev_point = x[:, -1, :]  # (B, 2)
+        # Start decoder from the last available target-sized slice (typically x,y).
+        prev_point = x[:, -1, : self.output_features]
         predictions = []
 
         # Decode future trajectory
-        for _ in range(self.future_frames):
+        for frame_idx in range(self.future_frames):
             # Project previous point to decoder input dimension
             decoder_input = self.decoder_input(prev_point).unsqueeze(
                 1
@@ -108,10 +114,86 @@ class LSTMGRUPredictor(nn.Module):
         return torch.cat(predictions, dim=1)  # (B, future_frames, 2)
 
 
+class ProbabilisticLSTMGRUPredictor(nn.Module):
+    """
+    LSTM-GRU based probabilistic trajectory predictor.
+    Predicts Gaussian parameters for each future coordinate.
+
+    Input shape:  (B, 4, F)
+    Output shape: mean/logvar each (B, 12, O)
+    """
+
+    def __init__(
+        self,
+        history_frames: int = 4,
+        future_frames: int = 12,
+        hidden_dim: int = 256,
+        input_features: int = 2,
+        output_features: int = 2,
+    ) -> None:
+        super().__init__()
+        self.history_frames = history_frames
+        self.future_frames = future_frames
+        self.hidden_dim = hidden_dim
+        self.input_features = input_features
+        self.output_features = output_features
+
+        self.encoder = nn.LSTM(
+            input_size=input_features,
+            hidden_size=hidden_dim,
+            batch_first=True,
+        )
+
+        self.feature_fusion = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.ReLU(),
+        )
+
+        self.decoder = nn.GRU(
+            input_size=hidden_dim,
+            hidden_size=hidden_dim,
+            batch_first=True,
+        )
+
+        self.decoder_input = nn.Linear(output_features, hidden_dim)
+        self.mean_head = nn.Linear(hidden_dim, output_features)
+        self.logvar_head = nn.Linear(hidden_dim, output_features)
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        encoder_outputs, (hidden_state, _) = self.encoder(x)
+        encoder_summary = hidden_state[-1]
+        context, _ = torch.max(encoder_outputs, dim=1)
+
+        decoder_seed = self.feature_fusion(
+            torch.cat([encoder_summary, context], dim=-1)
+        )
+        decoder_hidden = decoder_seed.unsqueeze(0)
+
+        prev_point = x[:, -1, : self.output_features]
+        pred_mean = []
+        pred_logvar = []
+
+        for _ in range(self.future_frames):
+            decoder_input = self.decoder_input(prev_point).unsqueeze(1)
+            decoder_output, decoder_hidden = self.decoder(decoder_input, decoder_hidden)
+            step_hidden = decoder_output.squeeze(1)
+
+            step_mean = self.mean_head(step_hidden)
+            # Clamp log-variance for numerical stability.
+            step_logvar = torch.clamp(self.logvar_head(step_hidden), min=-8.0, max=4.0)
+
+            pred_mean.append(step_mean.unsqueeze(1))
+            pred_logvar.append(step_logvar.unsqueeze(1))
+            prev_point = step_mean
+
+        return torch.cat(pred_mean, dim=1), torch.cat(pred_logvar, dim=1)
+
+
 def create_model(
     num_input_frames=4,
     num_output_frames=12,
     num_features=2,
+    num_output_features=2,
     device="cuda" if torch.cuda.is_available() else "cpu",
     hidden_dim=32,
     **kwargs,
@@ -122,7 +204,8 @@ def create_model(
     Args:
         num_input_frames: Number of history frames (default 4)
         num_output_frames: Number of future frames (default 12)
-        num_features: Number of features per frame (must be 2 for this model: x, y)
+        num_features: Number of input features per frame
+        num_output_features: Number of output features per frame
         device: Device to place model on ('cuda' or 'cpu')
         hidden_dim: Hidden dimension size for LSTM/GRU (default 32)
         **kwargs: Additional arguments (ignored)
@@ -130,15 +213,12 @@ def create_model(
     Returns:
         LSTMGRUPredictor model on specified device
     """
-    if num_features != 2:
-        raise ValueError(
-            f"LSTMGRUPredictor only supports 2 features (x, y), got {num_features}"
-        )
-
     model = LSTMGRUPredictor(
         history_frames=num_input_frames,
         future_frames=num_output_frames,
         hidden_dim=hidden_dim,
+        input_features=num_features,
+        output_features=num_output_features,
     )
     model = model.to(device)
     return model

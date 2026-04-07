@@ -14,8 +14,8 @@ class TrajectoryDataset(Dataset):
     def __init__(self, x, y, device="cpu"):
         """
         Args:
-            x: Input trajectories of shape (N, num_input_frames, num_features)
-            y: Target trajectories of shape (N, num_output_frames, num_features)
+            x: Input trajectories of shape (N, num_input_frames, num_input_features)
+            y: Target trajectories of shape (N, num_output_frames, num_output_features)
             device: Device to load tensors onto
         """
         self.x = x.to(device)
@@ -25,9 +25,6 @@ class TrajectoryDataset(Dataset):
         assert x.shape[0] == y.shape[0], "Mismatched number of samples"
         assert len(x.shape) == 3, f"x must be 3D (N, frames, features), got {x.shape}"
         assert len(y.shape) == 3, f"y must be 3D (N, frames, features), got {y.shape}"
-        assert x.shape[2] == y.shape[2], (
-            f"Feature mismatch: x has {x.shape[2]}, y has {y.shape[2]}"
-        )
 
     def __len__(self):
         return len(self.x)
