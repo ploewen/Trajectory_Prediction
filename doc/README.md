@@ -25,6 +25,12 @@ The training script defines the following stages:
 4. `training/train.py` saves checkpoints and metadata into `experiments/<stage>/`.
 5. `training/eval.py`, `training/benchmark_all_models.py`, and `training/visualize_predictions.py` reuse the saved checkpoints for evaluation and plotting.
 
+## nuScenes data location
+
+The code expects the downloaded nuScenes assets to live directly under the repository's `data/` directory. Put the trainval tables in `data/v1.0-trainval/` and the map expansion files in `data/maps/`.
+
+That layout lets `NuScenes(version="v1.0-trainval", dataroot="data", ...)` and the map helpers resolve the dataset without additional path configuration.
+
 ## Demo script
 
 `training/example_inference.py` loads a saved checkpoint, prints a sample history/target pair, runs inference, and saves a comparison plot so you can inspect input-output behavior without retraining.

@@ -19,7 +19,19 @@ The project targets Python 3.9 or newer.
    pip install -r requirements.txt
    ```
 
-3. Verify the workspace.
+3. Place the downloaded nuScenes data under `data/`.
+
+   The repository expects the nuScenes root directory to be the local `data/` folder. After downloading the nuScenes trainval tables and map expansion assets, the layout should look like this:
+
+   ```text
+   data/
+     v1.0-trainval/
+     maps/
+   ```
+
+   In other words, `v1.0-trainval` and `maps` should sit directly inside `data/`, so the code can resolve `NuScenes(version="v1.0-trainval", dataroot="data", ...)` without any extra path changes.
+
+4. Verify the workspace.
 
    ```bash
    python training/verify_setup.py
