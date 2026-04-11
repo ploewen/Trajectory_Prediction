@@ -3,14 +3,16 @@
 Use these commands from the repo root:
 
 ```bash
-cd /media/robotswithai/data1/ece1508
+cd "$(git rev-parse --show-toplevel)"
 ```
 
 ## Python executable
 
 ```bash
-PY=/home/robotswithai/miniconda3/envs/ece1508/bin/python
+PY=python
 ```
+
+If your shell `python` is not your intended environment, replace it with your full interpreter path.
 
 ## 1) Preprocess data
 
