@@ -19,6 +19,7 @@ nuscenes_data/
 
 # Local-only docs/notes
 SUMMARY.md
+CHANGELOG.md
 
 # Jupyter cache
 .ipynb_checkpoints/
