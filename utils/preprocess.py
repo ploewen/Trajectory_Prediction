@@ -269,8 +269,3 @@ def process_scenes():
     print(f"  pedestrian_mask = agent_types == 0")
     print(f"  x_vehicles = train_x[vehicle_mask]")
     print(f"  x_pedestrians = train_x[pedestrian_mask]")
-
-
-if __name__ == "__main__":
-    process_scenes()
-    print("\n[DONE] Preprocessing complete!")
