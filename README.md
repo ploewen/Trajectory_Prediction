@@ -1,19 +1,98 @@
-# Trajectory Prediction for Autonomous Driving: RNN and Transformer Approaches
+# Trajectory Prediction for Autonomous Driving
 
-Trajectory prediction is a fundamental problem in autonomous driving. An autonomous vehicle must anticipate how surrounding agents such as cars, cyclists, and pedestrians will move in the near future in order to plan safe and efficient driving strategies. The goal of trajectory prediction is to forecast the future motion of road users based on their observed past trajectories.
+This repository contains three trajectory-prediction baselines for nuScenes-based motion forecasting:
 
-In this project, we study the problem of predicting the future two-dimensional trajectories of road agents using LSTMs, GRUs and Transformers. Given the past motion of a target agent, the task is to predict its future positions over a fixed prediction horizon.
+- A constant-velocity baseline in [baseline/](baseline/)
+- An RNN/LSTM/GRU track in [rnn-model/](rnn-model/)
+- A Transformer track in [transformer_model/](transformer_model/)
 
-We have developed a central pre-processing strategy, 
-which standardizes the input data for all models. This includes normalizing agent positions, handling missing data, and segmenting trajectories into fixed-length sequences. By maintaining a consistent preprocessing pipeline, we ensure fair comparisons between models and reproducibility of results. 
+The common task is to predict 12 future ego-centric trajectory points from 4 observed history frames. The preprocessing pipeline standardizes the data so the models can be compared on the same inputs and splits.
 
-Each model has been given its own seperate branch to allow for independent implementation and experimentation.
+## Repository Layout
+- [baseline/](baseline/) contains the constant-velocity baseline and summary scripts.
+- [rnn-model/](rnn-model/) contains the RNN experiments, training scripts, saved checkpoints, and documentation.
+- [transformer_model/](transformer_model/) contains the Transformer experiments and training scripts.
 
-## Baseline Model
-As a reference method, we implement a [constant velocity baseline model](https://github.com/ploewen/Trajectory_Prediction/tree/yongxin-baseline) .
+## Setup
 
-## RNN Model
-The [RNN model](https://github.com/ploewen/Trajectory_Prediction/tree/rnn-model) leverages sequential neural networks such as LSTMs and GRUs to capture temporal dependencies in agent trajectories for accurate future position prediction.
+The project targets Python 3.13 or newer.
 
-## Transformer Model
-The [Transformer model](https://github.com/ploewen/Trajectory_Prediction/tree/transformer-model) utilizes self-attention mechanisms to model complex interactions and long-range dependencies in trajectory data for improved prediction accuracy.
+1. Create and activate a virtual environment.
+
+	```bash
+	python3 -m venv .venv
+	source .venv/bin/activate
+	```
+
+2. Install dependencies.
+
+	```bash
+	pip install -r requirements.txt
+	```
+
+	If you prefer `uv`, you can install from the project metadata instead:
+
+	```bash
+	uv sync
+	```
+
+3. Make sure the nuScenes data is available under `data/`.
+
+	The repository expects the dataset layout below:
+
+	```text
+	data/
+	  v1.0-trainval/
+	  maps/
+	```
+
+	The preprocessed tensors used by the training code should also be present in `data/`.
+
+4. Verify the setup.
+
+	```bash
+	python rnn-model/training/verify_setup.py
+	```
+
+## Common Commands
+
+Run the baseline:
+
+```bash
+python baseline/scripts/baseline.py
+```
+
+Summarize baseline outputs:
+
+```bash
+python baseline/scripts/summary_baseline_results.py
+```
+
+Train an RNN experiment:
+
+```bash
+python rnn-model/training/train.py
+```
+
+Evaluate or visualize an RNN checkpoint:
+
+```bash
+python rnn-model/training/eval.py
+python rnn-model/training/visualize_predictions.py
+```
+
+Train a Transformer experiment:
+
+```bash
+python transformer_model/training/train.py
+```
+
+Run the Transformer demo inference script:
+
+```bash
+python transformer_model/training/example_inference.py
+``
+
+## More Detail
+
+See [rnn-model/doc/README.md](rnn-model/doc/README.md) for a longer description of the data flow, stage definitions, and troubleshooting notes.
