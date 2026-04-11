@@ -1,0 +1,19 @@
+{
+  "stage_name": "cars_probabilistic",
+  "description": "Cars: probabilistic Gaussian output (mean + uncertainty)",
+  "agent_types": [
+    "vehicle"
+  ],
+  "include_velocity": false,
+  "selected_map_features": null,
+  "probabilistic": true,
+  "append_map_to_existing": false,
+  "num_epochs": 100,
+  "batch_size": 512,
+  "learning_rate": 0.001,
+  "num_training_samples": 210385,
+  "num_test_samples": 23563,
+  "best_epoch": 28,
+  "best_val_loss": 2.1065395385661025,
+  "training_time_seconds": 1044.5646603107452
+}

@@ -1,0 +1,19 @@
+{
+  "stage_name": "cars_velocity",
+  "description": "Cars: position + velocity",
+  "agent_types": [
+    "vehicle"
+  ],
+  "include_velocity": true,
+  "selected_map_features": null,
+  "probabilistic": false,
+  "append_map_to_existing": false,
+  "num_epochs": 60,
+  "batch_size": 512,
+  "learning_rate": 0.001,
+  "num_training_samples": 210385,
+  "num_test_samples": 23563,
+  "best_epoch": 28,
+  "best_val_loss": 5.36396565272453,
+  "training_time_seconds": 497.54376196861267
+}
