@@ -91,8 +91,4 @@ Run the Transformer demo inference script:
 
 ```bash
 python transformer_model/training/example_inference.py
-``
-
-## More Detail
-
-See [rnn-model/doc/README.md](rnn-model/doc/README.md) for a longer description of the data flow, stage definitions, and troubleshooting notes.
+```
