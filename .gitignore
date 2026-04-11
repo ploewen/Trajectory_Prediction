@@ -1,17 +1,39 @@
-data/
-processed/
-*.pt
+# Python artifacts
 __pycache__/
-.DS_Store
-
-# datasets
-data/
-processed/
-
-# python
-__pycache__/
+*.py[cod]
 *.pyc
 
-# mac
-.DS_Store
+# Datasets and processed artifacts
+data/
+processed/
+transformer_model/data/
+extra/nuscenes_data/
+nuscenes_data/
+*.pt
+*.tgz
+*.zip
+
+# Logs and local runtime outputs
+*.log
+nohup.out
+
+# Training artifacts
+checkpoints/
+transformer_model/checkpoints/
+
+# Local-only docs/notes
+SUMMARY.md
+CHANGELOG.md
+
+# Jupyter cache
+.ipynb_checkpoints/
+
+# Local migration safety backups
+_migration_backups/
+
+# Editor and OS
 .vscode/
+.DS_Store
+
+# Legacy local workspace (do not track)
+extra/
