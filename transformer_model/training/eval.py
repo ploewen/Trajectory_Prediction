@@ -9,25 +9,52 @@ from pathlib import Path
 import argparse
 import json
 import numpy as np
+import math
 from tqdm import tqdm
 
 from model import TransformerTrajectoryPredictor, LegacyFlattenedTransformerTrajectoryPredictor
 from dataset import load_data, create_dataloaders
 
 
-def resolve_data_dir(project_dir, agent, features):
-    """Resolve data directory for an experiment with fallback to baseline data/."""
-    candidate = project_dir / 'data' / agent / features
+def bivariate_gaussian_nll(predictions, targets, eps=1e-6):
+    """Negative log-likelihood for bivariate Gaussian trajectory outputs."""
+    mu_x = predictions[:, :, 0]
+    mu_y = predictions[:, :, 1]
+    sigma_x = torch.clamp(predictions[:, :, 2], min=eps)
+    sigma_y = torch.clamp(predictions[:, :, 3], min=eps)
+    rho = torch.clamp(predictions[:, :, 4], min=-0.999, max=0.999)
+
+    x = targets[:, :, 0]
+    y = targets[:, :, 1]
+
+    norm_x = (x - mu_x) / sigma_x
+    norm_y = (y - mu_y) / sigma_y
+    z = norm_x ** 2 + norm_y ** 2 - 2.0 * rho * norm_x * norm_y
+    one_minus_rho_sq = torch.clamp(1.0 - rho ** 2, min=eps)
+
+    nll = (
+        math.log(2.0 * math.pi)
+        + torch.log(sigma_x)
+        + torch.log(sigma_y)
+        + 0.5 * torch.log(one_minus_rho_sq)
+        + z / (2.0 * one_minus_rho_sq)
+    )
+    return nll.mean()
+
+
+def resolve_data_dir(project_dir, agent):
+    """Resolve the flat per-agent data directory."""
+    candidate = project_dir / 'data' / agent
     required = ['train_x.pt', 'train_y.pt', 'scene_ids.pt']
 
     if candidate.exists() and all((candidate / name).exists() for name in required):
-        print(f"Using experiment-specific data dir: {candidate}")
+        print(f"Using data dir: {candidate}")
         return candidate
 
-    fallback = project_dir / 'data'
-    print(f"Using fallback data dir: {fallback}")
-    print(f"(Expected {candidate} for agent={agent}, features={features})")
-    return fallback
+    missing = [name for name in required if not (candidate / name).exists()]
+    raise FileNotFoundError(
+        f"Missing required data files in {candidate}: {', '.join(missing)}"
+    )
 
 
 def save_trajectory_plot(history, ground_truth, prediction, index, output_dir):
@@ -75,14 +102,14 @@ def evaluate_model(checkpoint_path, device=None, batch_size=64, data_dir=None, a
     project_dir = script_dir.parent
 
     if data_dir is None:
-        data_dir = resolve_data_dir(project_dir, agent, features)
+        data_dir = resolve_data_dir(project_dir, agent)
     else:
         data_dir = Path(data_dir)
         print(f"Using explicit data dir: {data_dir}")
     
     # Load data first to detect actual dimensions
     print("\nLoading data...")
-    train_x, train_y, scene_ids = load_data(data_dir=data_dir, device=device)
+    train_x, train_y, scene_ids = load_data(data_dir=data_dir, agent=agent, features=features, device=device)
     
     # Create dataloaders
     train_loader, test_loader, train_idx, test_idx = create_dataloaders(
@@ -113,9 +140,15 @@ def evaluate_model(checkpoint_path, device=None, batch_size=64, data_dir=None, a
         architecture_version is None and input_embedding_weight.shape[1] == num_input_frames * num_input_features
     )
 
+    output_head_weight = checkpoint['model_state_dict'].get('output_head.3.weight')
+    inferred_probabilistic = (
+        output_head_weight is not None and output_head_weight.shape[0] == num_output_frames * 5
+    )
+    is_probabilistic = bool(hyperparams.get('is_probabilistic', inferred_probabilistic))
+
     model_cls = LegacyFlattenedTransformerTrajectoryPredictor if uses_legacy_flattened_model else TransformerTrajectoryPredictor
 
-    model = model_cls(
+    model_kwargs = dict(
         num_input_frames=num_input_frames,
         num_output_frames=num_output_frames,
         num_input_features=num_input_features,
@@ -124,12 +157,17 @@ def evaluate_model(checkpoint_path, device=None, batch_size=64, data_dir=None, a
         nhead=nhead,
         num_layers=num_layers
     )
+    if not uses_legacy_flattened_model:
+        model_kwargs['is_probabilistic'] = is_probabilistic
+
+    model = model_cls(**model_kwargs)
     model.load_state_dict(checkpoint['model_state_dict'])
     model = model.to(device)
     model.eval()
     
     print(f"Model loaded (Epoch {checkpoint.get('epoch', 'N/A')})")
     print(f"  Architecture: {'legacy_flattened_v1' if uses_legacy_flattened_model else 'temporal_tokens_v2'}")
+    print(f"  Probabilistic mode: {is_probabilistic}")
     print(f"  Input: {num_input_frames} frames × {num_input_features} features")
     print(f"  Output: {num_output_frames} frames × {num_output_features} features")
     
@@ -139,14 +177,19 @@ def evaluate_model(checkpoint_path, device=None, batch_size=64, data_dir=None, a
     all_targets = []
     all_losses = []
     
-    criterion = nn.MSELoss()
+    criterion = bivariate_gaussian_nll if is_probabilistic else nn.MSELoss()
     
     with torch.no_grad():
         for x_batch, y_batch in tqdm(test_loader, desc='Evaluating'):
             y_pred = model(x_batch)
-            loss = criterion(y_pred, y_batch)
+            if is_probabilistic:
+                loss = criterion(y_pred, y_batch[:, :, :2])
+                pred_for_metrics = y_pred[:, :, :2]
+            else:
+                loss = criterion(y_pred, y_batch)
+                pred_for_metrics = y_pred
             
-            all_predictions.append(y_pred.cpu().numpy())
+            all_predictions.append(pred_for_metrics.cpu().numpy())
             all_targets.append(y_batch.cpu().numpy())
             all_losses.append(loss.item())
     
@@ -272,7 +315,7 @@ def main(checkpoint_path=None, agent='car', features='baseline', batch_size=64, 
     try:
         script_dir = Path(__file__).parent
         project_dir = script_dir.parent
-        train_x, _, scene_ids = load_data(device='cpu')
+        train_x, _, scene_ids = load_data(agent=agent, features=features, device='cpu')
         train_mask = scene_ids < 700
         test_indices = torch.where(~train_mask)[0]
         plots_dir = checkpoint_path.parent / 'trajectory_plots'
@@ -305,7 +348,7 @@ if __name__ == '__main__':
                         help='Optional checkpoint path; defaults to checkpoints/{agent}_{features}/best_model.pt')
     parser.add_argument('--agent', choices=['car', 'pedestrian'], default='car',
                         help='Agent type experiment key')
-    parser.add_argument('--features', choices=['baseline', 'velocity', 'map', 'probabilistic'],
+    parser.add_argument('--features', choices=['baseline', 'velocity', 'map', 'probabilistic', 'probabilistic_velocity'],
                         default='baseline', help='Feature set experiment key')
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--data-dir', type=str, default=None,

@@ -9,25 +9,68 @@ from pathlib import Path
 import argparse
 import json
 import time
+import math
+import random
+import numpy as np
 from tqdm import tqdm
 
 from model import TransformerTrajectoryPredictor, create_model
 from dataset import load_data, create_dataloaders
 
 
-def resolve_data_dir(project_dir, agent, features):
-    """Resolve data directory for an experiment with fallback to baseline data/."""
-    candidate = project_dir / 'data' / agent / features
+def set_global_seed(seed):
+    """Set random seeds across libraries for reproducible training runs."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+    # Keep CuDNN deterministic for reproducibility.
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def bivariate_gaussian_nll(predictions, targets, eps=1e-6):
+    """Negative log-likelihood for bivariate Gaussian trajectory outputs."""
+    mu_x = predictions[:, :, 0]
+    mu_y = predictions[:, :, 1]
+    sigma_x = torch.clamp(predictions[:, :, 2], min=eps)
+    sigma_y = torch.clamp(predictions[:, :, 3], min=eps)
+    rho = torch.clamp(predictions[:, :, 4], min=-0.999, max=0.999)
+
+    x = targets[:, :, 0]
+    y = targets[:, :, 1]
+
+    norm_x = (x - mu_x) / sigma_x
+    norm_y = (y - mu_y) / sigma_y
+    z = norm_x ** 2 + norm_y ** 2 - 2.0 * rho * norm_x * norm_y
+    one_minus_rho_sq = torch.clamp(1.0 - rho ** 2, min=eps)
+
+    nll = (
+        math.log(2.0 * math.pi)
+        + torch.log(sigma_x)
+        + torch.log(sigma_y)
+        + 0.5 * torch.log(one_minus_rho_sq)
+        + z / (2.0 * one_minus_rho_sq)
+    )
+    return nll.mean()
+
+
+def resolve_data_dir(project_dir, agent):
+    """Resolve the flat per-agent data directory."""
+    candidate = project_dir / 'data' / agent
     required = ['train_x.pt', 'train_y.pt', 'scene_ids.pt']
 
     if candidate.exists() and all((candidate / name).exists() for name in required):
-        print(f"Using experiment-specific data dir: {candidate}")
+        print(f"Using data dir: {candidate}")
         return candidate
 
-    fallback = project_dir / 'data'
-    print(f"Using fallback data dir: {fallback}")
-    print(f"(Expected {candidate} for agent={agent}, features={features})")
-    return fallback
+    missing = [name for name in required if not (candidate / name).exists()]
+    raise FileNotFoundError(
+        f"Missing required data files in {candidate}: {', '.join(missing)}"
+    )
 
 
 def compute_metrics(predictions, targets):
@@ -51,15 +94,25 @@ def compute_metrics(predictions, targets):
         - ade_per_category: Dict with ADE for each category (if one-hot present)
           e.g., {'car': 1.8, 'pedestrian': 3.2}
     """
-    num_features = predictions.shape[2]
-    batch_size = predictions.shape[0]
+    # Probabilistic mode outputs 5 params; metrics should use mean positions only.
+    if predictions.shape[2] == 5:
+        predictions_for_metrics = predictions[:, :, :2]
+    else:
+        predictions_for_metrics = predictions
+
+    target_dim = targets.shape[2]
+    pred_dim = predictions_for_metrics.shape[2]
+    compare_dim = min(pred_dim, target_dim)
+
+    pred_cmp = predictions_for_metrics[:, :, :compare_dim]
+    target_cmp = targets[:, :, :compare_dim]
     
     # MSE: mean squared error across all coordinates
-    mse = torch.mean((predictions - targets) ** 2).item()
+    mse = torch.mean((pred_cmp - target_cmp) ** 2).item()
     rmse = torch.sqrt(torch.tensor(mse)).item()
     
     # ADE/FDE: Only use position features (first 2) to avoid mixing units
-    pred_pos = predictions[:, :, :2]  # Get position only (x, y)
+    pred_pos = predictions_for_metrics[:, :, :2]  # Get position only (x, y)
     target_pos = targets[:, :, :2]     # Get position only (x, y)
     
     # ADE: Average Displacement Error (mean L2 distance to ground truth)
@@ -75,29 +128,6 @@ def compute_metrics(predictions, targets):
         'ade': ade,
         'fde': fde
     }
-    
-    # If categorical features exist (one-hot encoded), compute ADE per category
-    if num_features > 2:
-        num_categories = num_features - 2  # Number of categorical features
-        
-        # Extract one-hot categories from targets (position-independent, same across frames)
-        categories_onehot = targets[0, 0, 2:2+num_categories]  # Shape: (num_categories,)
-        category_idx = torch.argmax(categories_onehot).item()
-        
-        # Get all samples and their categories
-        all_categories_onehot = targets[:, 0, 2:2+num_categories]  # (batch, num_categories)
-        category_indices = torch.argmax(all_categories_onehot, dim=1)  # (batch,)
-        
-        # Compute ADE per category
-        ade_per_category = {}
-        for cat_id in range(num_categories):
-            mask = category_indices == cat_id
-            if mask.sum() > 0:
-                cat_distances = distances[mask]
-                cat_ade = torch.mean(cat_distances).item()
-                ade_per_category[f'category_{cat_id}'] = cat_ade
-        
-        metrics['ade_per_category'] = ade_per_category
     
     return metrics
 
@@ -216,7 +246,8 @@ def train(
     features='baseline',
     d_model=64,
     nhead=8,
-    num_layers=4
+    num_layers=4,
+    seed=42
 ):
     """
     Full training pipeline.
@@ -229,11 +260,16 @@ def train(
         checkpoint_dir: Directory to save checkpoints (if None, uses checkpoints/{agent}_{features})
         data_dir: Directory containing train_x.pt/train_y.pt/scene_ids.pt
         agent: Agent type experiment key (e.g., car, pedestrian)
-        features: Feature set experiment key (e.g., baseline, velocity, map, probabilistic)
+        features: Feature set experiment key (e.g., baseline, velocity, map, probabilistic,
+            probabilistic_velocity)
         d_model: Hidden dimension
         nhead: Number of attention heads
         num_layers: Number of transformer layers
+        seed: Random seed for reproducible training
     """
+    set_global_seed(seed)
+    print(f"Random seed: {seed}")
+
     # Setup device
     if device is None:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -254,14 +290,14 @@ def train(
     print(f"Experiment: agent={agent}, features={features}")
 
     if data_dir is None:
-        data_dir = resolve_data_dir(project_dir, agent, features)
+        data_dir = resolve_data_dir(project_dir, agent)
     else:
         data_dir = Path(data_dir)
         print(f"Using explicit data dir: {data_dir}")
     
     # Load data
     print("\nLoading data...")
-    train_x, train_y, scene_ids = load_data(data_dir=data_dir, device=device)
+    train_x, train_y, scene_ids = load_data(data_dir=data_dir, agent=agent, features=features, device=device)
     
     # Create dataloaders
     print("\nCreating dataloaders...")
@@ -284,6 +320,8 @@ def train(
     print(f"  Input: {num_input_frames} frames × {num_input_features} features")
     print(f"  Output: {num_output_frames} frames × {num_output_features} features")
     
+    is_probabilistic = 'probabilistic' in features
+
     model = TransformerTrajectoryPredictor(
         num_input_frames=num_input_frames,
         num_output_frames=num_output_frames,
@@ -293,7 +331,8 @@ def train(
         nhead=nhead,
         num_layers=num_layers,
         dim_feedforward=256,
-        dropout=0.1
+        dropout=0.1,
+        is_probabilistic=is_probabilistic
     )
     model = model.to(device)
     
@@ -311,7 +350,8 @@ def train(
         cooldown=2,
         min_lr=1e-6
     )
-    criterion = nn.MSELoss()
+    criterion = bivariate_gaussian_nll if is_probabilistic else nn.MSELoss()
+    print(f"Loss function: {'BivariateGaussianNLL' if is_probabilistic else 'MSELoss'}")
     
     # Training loop
     print(f"\nTraining for {num_epochs} epochs...\n")
@@ -389,7 +429,9 @@ def train(
                     'num_input_features': num_input_features,
                     'num_output_frames': num_output_frames,
                     'num_output_features': num_output_features,
-                    'architecture_version': 'temporal_tokens_v2'
+                    'architecture_version': 'temporal_tokens_v2',
+                    'is_probabilistic': is_probabilistic,
+                    'seed': seed,
                 }
             }
             
@@ -417,7 +459,9 @@ def train(
             'num_input_features': num_input_features,
             'num_output_frames': num_output_frames,
             'num_output_features': num_output_features,
-            'architecture_version': 'temporal_tokens_v2'
+            'architecture_version': 'temporal_tokens_v2',
+            'is_probabilistic': is_probabilistic,
+            'seed': seed,
         }
     }
     torch.save(final_checkpoint, checkpoint_dir / 'final_model.pt')
@@ -443,7 +487,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train transformer trajectory predictor')
     parser.add_argument('--agent', choices=['car', 'pedestrian'], default='car',
                         help='Agent type experiment key')
-    parser.add_argument('--features', choices=['baseline', 'velocity', 'map', 'probabilistic'],
+    parser.add_argument('--features', choices=['baseline', 'velocity', 'map', 'probabilistic', 'probabilistic_velocity'],
                         default='baseline', help='Feature set experiment key')
     parser.add_argument('--num-epochs', type=int, default=100)
     parser.add_argument('--batch-size', type=int, default=32)
@@ -455,17 +499,38 @@ if __name__ == '__main__':
                         help='Optional explicit data directory')
     parser.add_argument('--checkpoint-dir', type=str, default=None,
                         help='Optional explicit checkpoint directory')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Single random seed for training (default: 42)')
+    parser.add_argument('--seeds', type=str, default=None,
+                        help='Comma-separated seeds to run sequentially, e.g. 42,123')
     args = parser.parse_args()
 
-    train(
-        num_epochs=args.num_epochs,
-        batch_size=args.batch_size,
-        learning_rate=args.learning_rate,
-        checkpoint_dir=args.checkpoint_dir,
-        data_dir=args.data_dir,
-        agent=args.agent,
-        features=args.features,
-        d_model=args.d_model,
-        nhead=args.nhead,
-        num_layers=args.num_layers
-    )
+    seeds = [args.seed]
+    if args.seeds:
+        seeds = [int(x.strip()) for x in args.seeds.split(',') if x.strip()]
+        if not seeds:
+            raise ValueError('--seeds provided but no valid integer seed found.')
+
+    for run_seed in seeds:
+        run_checkpoint_dir = args.checkpoint_dir
+        if len(seeds) > 1:
+            if args.checkpoint_dir:
+                run_checkpoint_dir = str(Path(args.checkpoint_dir) / f"seed_{run_seed}")
+            else:
+                script_dir = Path(__file__).parent
+                project_dir = script_dir.parent
+                run_checkpoint_dir = str(project_dir / 'checkpoints' / f"{args.agent}_{args.features}_seed{run_seed}")
+
+        train(
+            num_epochs=args.num_epochs,
+            batch_size=args.batch_size,
+            learning_rate=args.learning_rate,
+            checkpoint_dir=run_checkpoint_dir,
+            data_dir=args.data_dir,
+            agent=args.agent,
+            features=args.features,
+            d_model=args.d_model,
+            nhead=args.nhead,
+            num_layers=args.num_layers,
+            seed=run_seed,
+        )

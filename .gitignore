@@ -9,6 +9,13 @@ nohup.out
 # Training artifacts
 checkpoints/
 transformer_model/checkpoints/
+transformer_model/data/
+
+# Local datasets and archives
+extra/nuscenes_data/
+nuscenes_data/
+*.tgz
+*.zip
 
 # Local-only docs/notes
 SUMMARY.md
